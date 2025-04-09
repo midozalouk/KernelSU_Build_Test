@@ -43,23 +43,8 @@ jobs:
     - name: Download kernel source
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        git clone --recursive https://github.com/LineageOS/android_kernel_oneplus_sm8150 -b lineage-22.1 android-kernel --depth=1
+        git clone --recursive https://github.com/Codecity001/android_kernel_oneplus_sm8150 -b 15-c-ksu android-kernel --depth=1
 
-    - name: Set up rsuntk KernelSU
-      run: |
-        cd $GITHUB_WORKSPACE/patches
-        sed -i '1655 r path_umount.c' $GITHUB_WORKSPACE/kernel_workspace/android-kernel/fs/namespace.c
-        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        #curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash -s main
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
-        bash $GITHUB_WORKSPACE/patches/patches.sh
-        if ! grep -q "CONFIG_KSU=y" arch/arm64/configs/vendor/sm8150-perf_defconfig; then
-          sed -i '$a # KernelSU\nCONFIG_KSU=y' arch/arm64/configs/vendor/sm8150-perf_defconfig
-        fi
-        KSU_VERSION=$(cd KernelSU && expr $(/usr/bin/git rev-list --count HEAD) + 10200)
-        echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-        cd scripts
-        sed -i 's/ -dirty//g' setlocalversion
 
     - name: Build kernel with rsuntk KernelSU
       run: |
