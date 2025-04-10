@@ -1,0 +1,137 @@
+name: Build LineageOS Kernel for OnePlus 7
+
+on:
+  workflow_dispatch:
+    inputs:
+      CUSTOM_BUILD_TAG:
+        description: 'Custom build tag (optional)'
+        required: false
+        default: ''
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Install required packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32readline-dev lib32z1-dev libelf-dev liblz4-tool lz4 libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python-is-python3 libncurses5 libncurses5-dev
+
+      - name: Configure git
+        run: |
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
+          git lfs install
+          git config --global trailer.changeid.key "Change-Id"
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          max-size: 15G
+
+      - name: Set up build environment
+        run: |
+          echo "CCACHE_EXEC=/usr/bin/ccache" >> $GITHUB_ENV
+          echo "USE_CCACHE=1" >> $GITHUB_ENV
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "PATH=$HOME/bin:$PATH" >> $GITHUB_ENV
+          mkdir -p ~/kernel
+
+      - name: Clone kernel source
+        working-directory: ~/kernel
+        run: |
+          git clone https://github.com/LineageOS/android_kernel_oneplus_sm8150.git -b lineage-22.1 --depth=1
+          
+      - name: Setup toolchain
+        run: |
+          # Download AOSP clang toolchain
+          mkdir -p ~/toolchains
+          cd ~/toolchains
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-r416183b.tar.gz
+          mkdir -p clang-r416183b
+          tar -xzf clang-r416183b.tar.gz -C clang-r416183b
+          
+          # Download GCC toolchain
+          mkdir -p gcc-arm64
+          mkdir -p gcc-arm
+          wget https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz -O gcc-arm64.tar.gz
+          wget https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/master.tar.gz -O gcc-arm.tar.gz
+          tar -xzf gcc-arm64.tar.gz -C gcc-arm64
+          tar -xzf gcc-arm.tar.gz -C gcc-arm
+          
+          echo "CLANG_PATH=$HOME/toolchains/clang-r416183b/bin" >> $GITHUB_ENV
+          echo "PATH=$HOME/toolchains/clang-r416183b/bin:$HOME/toolchains/gcc-arm64/bin:$HOME/toolchains/gcc-arm/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Build kernel
+        working-directory: ~/kernel/android_kernel_oneplus_sm8150
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export LLVM=1
+          
+          # Set the defconfig for guacamoleb (OnePlus 7)
+          make O=out guacamoleb_defconfig
+          
+          # Build the kernel with all available cores
+          make -j$(nproc --all) O=out \
+            CC=$CLANG_PATH/clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi-
+            
+      - name: Generate build info
+        id: build_info
+        run: |
+          BUILD_DATE=$(date +"%Y%m%d")
+          if [ -n "${{ github.event.inputs.CUSTOM_BUILD_TAG }}" ]; then
+            BUILD_TAG="${{ github.event.inputs.CUSTOM_BUILD_TAG }}"
+          else
+            BUILD_TAG="${BUILD_DATE}"
+          fi
+          echo "BUILD_TAG=${BUILD_TAG}" >> $GITHUB_ENV
+          echo "build_tag=${BUILD_TAG}" >> $GITHUB_OUTPUT
+          
+      - name: Create flashable zip
+        working-directory: ~/kernel
+        run: |
+          mkdir -p AnyKernel3
+          cd AnyKernel3
+          git clone https://github.com/osm0sis/AnyKernel3.git -b master --depth=1 .
+          
+          # Remove example files
+          rm -rf README.md META-INF/com/google/android/update-binary
+          
+          # Download update-binary
+          mkdir -p META-INF/com/google/android
+          wget -q https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/META-INF/com/google/android/update-binary -O META-INF/com/google/android/update-binary
+          
+          # Configure for OnePlus 7
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i 's/device.name1=/device.name1=guacamoleb/g' anykernel.sh
+          sed -i 's/device.name2=/device.name2=OnePlus7/g' anykernel.sh
+          sed -i 's/device.name3=/device.name3=oneplus7/g' anykernel.sh
+          sed -i 's/supported.versions=/supported.versions=11.0-12.0/g' anykernel.sh
+          sed -i 's/block=/block=\/dev\/block\/bootdevice\/by-name\/boot/g' anykernel.sh
+          
+          # Copy the compiled kernel
+          cp ~/kernel/android_kernel_oneplus_sm8150/out/arch/arm64/boot/Image.gz-dtb ./
+          
+          # Create the zip file
+          zip -r9 "../LineageOS-22.1-Kernel-OnePlus7-${{ env.BUILD_TAG }}.zip" * -x .git README.md *placeholder
+          
+      - name: Upload kernel zip
+        uses: actions/upload-artifact@v3
+        with:
+          name: LineageOS-22.1-Kernel-OnePlus7-${{ steps.build_info.outputs.build_tag }}
+          path: ~/kernel/LineageOS-22.1-Kernel-OnePlus7-${{ env.BUILD_TAG }}.zip
+          
+      - name: Upload kernel image
+        uses: actions/upload-artifact@v3
+        with:
+          name: Kernel-Image-OnePlus7-${{ steps.build_info.outputs.build_tag }}
+          path: ~/kernel/android_kernel_oneplus_sm8150/out/arch/arm64/boot/Image.gz-dtb
